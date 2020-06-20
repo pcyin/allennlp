@@ -50,10 +50,10 @@ class NamespaceSwappingField(Field[torch.Tensor]):
 
     @overrides
     def empty_field(self) -> "NamespaceSwappingField":
-        empty_field = NamespaceSwappingField([], self._target_namespace)
-        empty_field._mapping_array = []
+        empty_filed = NamespaceSwappingField([], self._target_namespace)
+        empty_filed._mapping_array = []
 
-        return empty_field
+        return empty_filed
 
     def __len__(self):
         return len(self._source_tokens)
