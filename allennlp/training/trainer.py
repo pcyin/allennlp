@@ -559,23 +559,24 @@ class GradientDescentTrainer(Trainer):
 
             self.optimizer.zero_grad()
 
-            batch_group_outputs = []
-            for batch in batch_group:
-                batch_outputs = self.batch_outputs(batch, for_training=True)
-                batch_group_outputs.append(batch_outputs)
-                loss = batch_outputs["loss"]
-                reg_loss = batch_outputs["reg_loss"]
-                if torch.isnan(loss):
-                    raise ValueError("nan loss encountered")
-                loss = loss / len(batch_group)
-                reg_loss = reg_loss / len(batch_group)
-                if self._opt_level is not None:
-                    with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss.backward()
-                train_loss += loss.item()
-                train_reg_loss += reg_loss.item()
+            with torch.autograd.detect_anomaly():
+                batch_group_outputs = []
+                for batch in batch_group:
+                    batch_outputs = self.batch_outputs(batch, for_training=True)
+                    batch_group_outputs.append(batch_outputs)
+                    loss = batch_outputs["loss"]
+                    reg_loss = batch_outputs["reg_loss"]
+                    if torch.isnan(loss):
+                        raise ValueError("nan loss encountered")
+                    loss = loss / len(batch_group)
+                    reg_loss = reg_loss / len(batch_group)
+                    if self._opt_level is not None:
+                        with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
+                    train_loss += loss.item()
+                    train_reg_loss += reg_loss.item()
 
             batch_grad_norm = self.rescale_gradients()
 
