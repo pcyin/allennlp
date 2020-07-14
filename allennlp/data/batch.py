@@ -65,7 +65,8 @@ class Batch(Iterable):
             for field_name, instance_field_lengths in instance_lengths.items():
                 all_field_lengths[field_name].append(instance_field_lengths)
         for field_name, field_lengths in all_field_lengths.items():
-            for padding_key in field_lengths[0].keys():
+            field_padding_keys = {key for x in field_lengths for key in x.keys()}
+            for padding_key in field_padding_keys:
                 max_value = max(x.get(padding_key, 0) for x in field_lengths)
                 padding_lengths[field_name][padding_key] = max_value
         return {**padding_lengths}
