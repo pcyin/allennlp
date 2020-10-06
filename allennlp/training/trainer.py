@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+import gc
 import traceback
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, Union
@@ -473,6 +474,7 @@ class GradientDescentTrainer(Trainer):
         patience: Optional[int] = None,
         validation_metric: str = "-loss",
         validation_data_loader: DataLoader = None,
+        validation_after_epoch: int = 0,
         num_epochs: int = 20,
         serialization_dir: Optional[str] = None,
         checkpointer: Checkpointer = None,
@@ -501,6 +503,7 @@ class GradientDescentTrainer(Trainer):
 
         self.data_loader = data_loader
         self._validation_data_loader = validation_data_loader
+        self._validation_after_epoch = validation_after_epoch
         self.optimizer = optimizer
 
         if patience is None:  # no early stopping
@@ -712,25 +715,39 @@ class GradientDescentTrainer(Trainer):
             batch_loss = 0.0
             batch_group_outputs = []
             for batch in batch_group:
-                with amp.autocast(self._use_amp):
-                    batch_outputs = self.batch_outputs(batch, for_training=True)
-                    batch_group_outputs.append(batch_outputs)
-                    loss = batch_outputs["loss"]
-                    reg_loss = batch_outputs.get("reg_loss")
-                    if torch.isnan(loss):
-                        raise ValueError("nan loss encountered")
-                    loss = loss / len(batch_group)
+                try:
+                    with amp.autocast(self._use_amp):
+                        batch_outputs = self.batch_outputs(batch, for_training=True)
+                        batch_group_outputs.append(batch_outputs)
+                        loss = batch_outputs.get("loss")
+                        reg_loss = batch_outputs.get("reg_loss")
+                        if torch.isnan(loss):
+                            raise ValueError("nan loss encountered")
+                        loss = loss / len(batch_group)
 
-                    batch_loss += loss.item()
-                    if reg_loss is not None:
-                        reg_loss = reg_loss / len(batch_group)
-                        batch_reg_loss = reg_loss.item()
-                        train_reg_loss += batch_reg_loss  # type: ignore
+                        batch_loss += loss.item()
+                        if reg_loss is not None:
+                            reg_loss = reg_loss / len(batch_group)
+                            batch_reg_loss = reg_loss.item()
+                            train_reg_loss += batch_reg_loss
 
-                if self._scaler is not None:
-                    self._scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                    if self._scaler is not None:
+                        self._scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        msg = "OOM: Ran out of memory with exception: {}".format(e)
+                        logger.warning(msg)
+                        logger.warning(
+                            "attempting to recover from OOM in forward/backward pass"
+                        )
+
+                        self.optimizer.zero_grad()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    else:
+                        raise e
 
             train_loss += batch_loss
 
@@ -1007,6 +1024,13 @@ class GradientDescentTrainer(Trainer):
             if self._distributed:
                 dist.barrier()
 
+            # clear CUDA memory cache after each epoch
+            if torch.cuda.is_available():
+                t1 = time.time()
+                gc.collect()
+                torch.cuda.empty_cache()
+                logger.info(f'Performed GC and cleared CUDA memory cache, took {time.time() - t1:.1f}s')
+
             # get peak of memory usage
             for key, value in train_metrics.items():
                 if key.startswith("gpu_") and key.endswith("_memory_MB"):
@@ -1014,7 +1038,7 @@ class GradientDescentTrainer(Trainer):
                 elif key.startswith("worker_") and key.endswith("_memory_MB"):
                     metrics["peak_" + key] = max(metrics.get("peak_" + key, 0), value)
 
-            if self._validation_data_loader is not None:
+            if self._validation_data_loader is not None and epoch >= self._validation_after_epoch:
                 with torch.no_grad():
                     # We have a validation set, so compute all the metrics on it.
                     val_loss, val_reg_loss, num_batches = self._validation_loss(epoch)
@@ -1217,6 +1241,7 @@ class GradientDescentTrainer(Trainer):
         serialization_dir: str,
         data_loader: DataLoader,
         validation_data_loader: DataLoader = None,
+        validation_after_epoch: int = 0,
         local_rank: int = 0,
         patience: int = None,
         validation_metric: str = "-loss",
@@ -1311,6 +1336,7 @@ class GradientDescentTrainer(Trainer):
             patience=patience,
             validation_metric=validation_metric,
             validation_data_loader=validation_data_loader,
+            validation_after_epoch=validation_after_epoch,
             num_epochs=num_epochs,
             serialization_dir=serialization_dir,
             cuda_device=cuda_device,
