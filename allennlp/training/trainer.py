@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+import gc
 import traceback
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
@@ -332,6 +333,7 @@ class GradientDescentTrainer(Trainer):
         patience: Optional[int] = None,
         validation_metric: str = "-loss",
         validation_data_loader: torch.utils.data.DataLoader = None,
+        validation_after_epoch: int = 0,
         num_epochs: int = 20,
         serialization_dir: Optional[str] = None,
         checkpointer: Checkpointer = None,
@@ -358,6 +360,7 @@ class GradientDescentTrainer(Trainer):
 
         self.data_loader = data_loader
         self._validation_data_loader = validation_data_loader
+        self._validation_after_epoch = validation_after_epoch
         self.optimizer = optimizer
 
         if patience is None:  # no early stopping
@@ -561,21 +564,35 @@ class GradientDescentTrainer(Trainer):
 
             batch_group_outputs = []
             for batch in batch_group:
-                batch_outputs = self.batch_outputs(batch, for_training=True)
-                batch_group_outputs.append(batch_outputs)
-                loss = batch_outputs["loss"]
-                reg_loss = batch_outputs["reg_loss"]
-                if torch.isnan(loss):
-                    raise ValueError("nan loss encountered")
-                loss = loss / len(batch_group)
-                reg_loss = reg_loss / len(batch_group)
-                if self._opt_level is not None:
-                    with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss.backward()
-                train_loss += loss.item()
-                train_reg_loss += reg_loss.item()
+                try:
+                    batch_outputs = self.batch_outputs(batch, for_training=True)
+                    batch_group_outputs.append(batch_outputs)
+                    loss = batch_outputs["loss"]
+                    reg_loss = batch_outputs["reg_loss"]
+                    if torch.isnan(loss):
+                        raise ValueError("nan loss encountered")
+                    loss = loss / len(batch_group)
+                    reg_loss = reg_loss / len(batch_group)
+                    if self._opt_level is not None:
+                        with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
+                    train_loss += loss.item()
+                    train_reg_loss += reg_loss.item()
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        msg = "OOM: Ran out of memory with exception: {}".format(e)
+                        logger.warning(msg)
+                        logger.warning(
+                            "attempting to recover from OOM in forward/backward pass"
+                        )
+
+                        self.optimizer.zero_grad()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    else:
+                        raise e
 
             batch_grad_norm = self.rescale_gradients()
 
@@ -801,6 +818,13 @@ class GradientDescentTrainer(Trainer):
             epoch_start_time = time.time()
             train_metrics = self._train_epoch(epoch)
 
+            # clear CUDA memory cache after each epoch
+            if torch.cuda.is_available():
+                t1 = time.time()
+                gc.collect()
+                torch.cuda.empty_cache()
+                logger.info(f'Performed GC and `cuda.empty_cache()` after epoch, took {time.time() - t1:.1f}s')
+
             # get peak of memory usage
             for key, value in train_metrics.items():
                 if key.startswith("gpu_") and key.endswith("_memory_MB"):
@@ -808,7 +832,7 @@ class GradientDescentTrainer(Trainer):
                 elif key.startswith("worker_") and key.endswith("_memory_MB"):
                     metrics["peak_" + key] = max(metrics.get("peak_" + key, 0), value)
 
-            if self._validation_data_loader is not None:
+            if self._validation_data_loader is not None and epoch >= self._validation_after_epoch:
                 with torch.no_grad():
                     # We have a validation set, so compute all the metrics on it.
                     val_loss, val_reg_loss, num_batches = self._validation_loss(epoch)
@@ -1012,6 +1036,7 @@ class GradientDescentTrainer(Trainer):
         serialization_dir: str,
         data_loader: DataLoader,
         validation_data_loader: DataLoader = None,
+        validation_after_epoch: int = 0,
         local_rank: int = 0,
         patience: int = None,
         validation_metric: str = "-loss",
@@ -1090,6 +1115,7 @@ class GradientDescentTrainer(Trainer):
             patience=patience,
             validation_metric=validation_metric,
             validation_data_loader=validation_data_loader,
+            validation_after_epoch=validation_after_epoch,
             num_epochs=num_epochs,
             serialization_dir=serialization_dir,
             cuda_device=cuda_device,
