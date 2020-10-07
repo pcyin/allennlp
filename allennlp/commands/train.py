@@ -14,6 +14,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from overrides import overrides
+import wandb
 
 from allennlp.commands.subcommand import Subcommand
 from allennlp.common import Params, Registrable, Lazy
@@ -224,6 +225,15 @@ def train_model(
 
     training_util.create_serialization_dir(params, serialization_dir, recover, force)
     params.to_file(os.path.join(serialization_dir, CONFIG_NAME))
+
+    # os.environ.setdefault('WANDB_DISABLE_CODE', 'true')
+    # os.environ.setdefault('WANDB_IGNORE_GLOBS', '*.th,*.gz,vocabulary,*epoch*.json,*.log,log')
+    use_wandb = params.pop_bool('wandb', False)
+    if use_wandb:
+        wandb.init()
+        wandb.config.update(params.as_dict())
+        wandb.config.work_dir = serialization_dir
+        logger.info(f'wandb run name: {wandb.run.name}')
 
     distributed_params = params.params.pop("distributed", None)
     # If distributed isn't in the config and the config contains strictly
@@ -537,6 +547,10 @@ class TrainModel(Registrable):
         common_util.dump_metrics(
             os.path.join(self.serialization_dir, "metrics.json"), metrics, log=True
         )
+
+        if wandb.run is not None:
+            logger.info(f'Logging training summary to wandb...')
+            wandb.summary.update(metrics)
 
     @classmethod
     def from_partial_objects(
