@@ -192,7 +192,7 @@ def create_serialization_dir(
     if os.path.exists(serialization_dir) and force:
         shutil.rmtree(serialization_dir)
 
-    if os.path.exists(serialization_dir) and os.listdir(serialization_dir):
+    if os.path.exists(serialization_dir) and os.path.exists(os.path.join(serialization_dir, 'config.json')):
         if not recover:
             raise ConfigurationError(
                 f"Serialization directory ({serialization_dir}) already exists and is "

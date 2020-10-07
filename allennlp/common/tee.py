@@ -67,3 +67,6 @@ class TeeHandler:
     def cleanup(self) -> TextIO:
         self.log.close()
         return self.terminal
+
+    def close(self):
+        self.log.close()
