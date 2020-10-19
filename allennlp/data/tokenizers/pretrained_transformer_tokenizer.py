@@ -126,9 +126,15 @@ class PretrainedTransformerTokenizer(Tokenizer):
 
         seen_dummy_a = False
         seen_dummy_b = False
-        for token_id, token_type_id in zip(
-            dummy_output["input_ids"], dummy_output["token_type_ids"]
-        ):
+        token_type_id_ptr = -1
+        for token_id in dummy_output["input_ids"]:
+            if len(dummy_output["token_type_ids"]) == len(dummy_output["input_ids"]):
+                token_type_id_ptr += 1
+            elif token_id in [dummy_a, dummy_b]:
+                token_type_id_ptr += 1
+
+            token_type_id = dummy_output["token_type_ids"][token_type_id_ptr]
+
             if token_id == dummy_a:
                 if seen_dummy_a or seen_dummy_b:  # seeing a twice or b before a
                     raise ValueError("Cannot auto-determine the number of special tokens added.")
@@ -178,9 +184,13 @@ class PretrainedTransformerTokenizer(Tokenizer):
         )
 
         seen_dummy_a = False
-        for token_id, token_type_id in zip(
-            dummy_output["input_ids"], dummy_output["token_type_ids"]
-        ):
+        token_type_id_ptr = -1
+        for token_id in dummy_output["input_ids"]:
+            if len(dummy_output["token_type_ids"]) == len(dummy_output["input_ids"]) or token_id == dummy_a:
+                token_type_id_ptr += 1
+
+            token_type_id = dummy_output["token_type_ids"][token_type_id_ptr]
+
             if token_id == dummy_a:
                 if seen_dummy_a:
                     raise ValueError("Cannot auto-determine the number of special tokens added.")
