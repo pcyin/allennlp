@@ -868,6 +868,7 @@ class GradientDescentTrainer(Trainer):
         logger.info("Validating")
 
         self._pytorch_model.eval()
+        self._pytorch_model._validation = True
 
         # Replace parameter values with the shadow values from the moving averages.
         if self._moving_average is not None:
@@ -972,6 +973,8 @@ class GradientDescentTrainer(Trainer):
         # Now restore the original parameter values.
         if self._moving_average is not None:
             self._moving_average.restore()
+
+        self._pytorch_model._validation = False
 
         return val_loss, val_reg_loss, batches_this_epoch
 
